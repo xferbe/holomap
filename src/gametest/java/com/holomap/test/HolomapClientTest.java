@@ -133,7 +133,7 @@ public class HolomapClientTest implements FabricClientGameTest {
 				level.addFreshEntity(frame);
 			});
 
-			// parede 4×4 de mapas vizinhos virada para o norte. De frente para ela (olhando para o sul) o leste fica à
+			// parede 3×3 de mapas vizinhos virada para o norte. De frente para ela (olhando para o sul) o leste fica à
 			// esquerda, então a coluna i mostra o mapa i passos a oeste, e a linha r (de baixo para cima) r passos ao norte.
 			int cx = scene[0], cz = scene[1];
 			server.runCommand(cmd("fill %d %d %d %d %d %d stone_bricks", x - 1, y, z + 10, x + WALL, y + WALL + 1, z + 10));
@@ -156,9 +156,11 @@ public class HolomapClientTest implements FabricClientGameTest {
 			ctx.runOnClient(mc -> {
 				if (!mc.gui.hud.isHidden()) mc.gui.hud.toggle();
 			});
+			// espectador não cai nem tem mão na tela: a câmera fica onde o tp mandou
+			server.runCommand("gamemode spectator @a");
 
 			// de cima e de lado, a uns dois blocos da mesa
-			server.runCommand(cmd("tp @a %d.5 %d %d.5 0 52", x, y + 3, z));
+			server.runCommand(cmd("tp @a %d.5 %d %d.6 0 50", x, y + 1, z + 1));
 			ctx.waitTicks(300);
 			shot(ctx, "01-table");
 
@@ -168,21 +170,46 @@ public class HolomapClientTest implements FabricClientGameTest {
 
 			// tempo real: torre de ouro na clareira
 			server.runCommand(cmd("fill %d %d %d %d %d %d gold_block", x + 3, y, z - 3, x + 4, y + 20, z - 2));
-			server.runCommand(cmd("tp @a %d.5 %d %d.5 0 52", x, y + 3, z));
+			server.runCommand(cmd("tp @a %d.5 %d %d.6 0 50", x, y + 1, z + 1));
 			ctx.waitTicks(30);
 			shot(ctx, "03-table-live-tower");
 
 			// parede: espera o terreno de todos os mapas chegar e as maquetes ficarem prontas
-			server.runCommand(cmd("tp @a %d.0 %d %d.5 0 8", x + WALL / 2, y + 1, z + 3));
+			server.runCommand(cmd("tp @a %d.5 %d %d.5 0 8", x + WALL / 2, y + 1, z + 3));
+			int wallMinX = cx - (WALL - 1) * 128 - 64, wallMinZ = cz - (WALL - 1) * 128 - 64;
+			int wallChunks = WALL * WALL * 64;
 			int waited = ctx.waitFor(mc -> {
+				// quase todo o terreno da parede no cliente (gerado no servidor e recebido) e nada mais montando
+				int known = ClientTerrain.countKnown(mc.level.dimension(), wallMinX, wallMinZ, cx + 63, cz + 63);
 				DioramaManager.Stats st = DioramaManager.stats();
-				return st.meshes() >= WALL * WALL && st.building() == 0 && st.knownChunks() >= WALL * WALL * 64;
-			}, 20 * 180);
+				return known >= wallChunks * 95 / 100 && st.meshes() >= WALL * WALL && st.building() == 0;
+			}, 20 * 240);
+			// as últimas remontagens (no ritmo do orçamento) terminam antes da foto
+			ctx.waitTicks(100);
 			// o servidor já guardou o terreno; não precisa mais manter a área carregada
 			server.runCommand("forceload remove all");
 			ctx.waitTicks(40);
 			shot(ctx, "04-wall");
 			loadTest(ctx, server, waited, x, y, z);
+
+			// os mesmos mapas deitados no chão: uma maquete grande, vista de cima e de perto
+			for (int i = 0; i < WALL; i++) {
+				for (int r = 0; r < WALL; r++) {
+					int mapX = cx - i * 128, mapZ = cz - r * 128;
+					int fx = x + 1 - i, fz = z + 7 - r;
+					server.runOnServer(s -> {
+						ServerLevel level = s.overworld();
+						ItemStack map = MapItem.create(level, mapX, mapZ, (byte) 0, false, false);
+						ItemFrame frame = new ItemFrame(level, new BlockPos(fx, y, fz), Direction.UP);
+						frame.setItem(map);
+						level.addFreshEntity(frame);
+					});
+				}
+			}
+			server.runCommand(cmd("tp @a %d.5 %d %d.5 0 56", x, y + 3, z + 3));
+			ctx.waitFor(mc -> DioramaManager.stats().building() == 0, 20 * 60);
+			ctx.waitTicks(100);
+			shot(ctx, "07-floor");
 
 			server.runCommand(cmd("tp @a %d.5 %d %d.5 0 35", x, y + 14, z - 10));
 			ctx.waitTicks(40);
@@ -191,7 +218,7 @@ public class HolomapClientTest implements FabricClientGameTest {
 			// à noite o relevo escurece com o mundo (luz do céu), não fica aceso
 			server.runCommand("time set midnight");
 			server.runCommand(cmd("setblock %d %d %d torch", x + 1, y, z + 3));
-			server.runCommand(cmd("tp @a %d.5 %d %d.5 0 52", x, y + 3, z));
+			server.runCommand(cmd("tp @a %d.5 %d %d.6 0 50", x, y + 1, z + 1));
 			ctx.waitTicks(40);
 			shot(ctx, "06-table-at-night");
 		}
@@ -220,7 +247,7 @@ public class HolomapClientTest implements FabricClientGameTest {
 		int rebuilds = DioramaManager.stats().builds() - buildsBefore;
 		long localChanged = ClientTerrain.localChanges() - localBefore, serverChanged = ClientTerrain.serverChanges() - serverBefore;
 		DioramaManager.Stats st = DioramaManager.stats();
-		server.runCommand(cmd("tp @a %d.0 %d %d.5 180 8", x + WALL / 2, y + 1, z + 3));
+		server.runCommand(cmd("tp @a %d.5 %d %d.5 180 8", x + WALL / 2, y + 1, z + 3));
 		ctx.waitTicks(40);
 		int[] away = fps(ctx, 10);
 		String report = String.format(Locale.ROOT,

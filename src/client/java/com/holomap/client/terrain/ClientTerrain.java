@@ -59,6 +59,19 @@ public final class ClientTerrain {
 		return serverChanges;
 	}
 
+	/** Quantos chunks da área (em blocos) o cliente conhece. */
+	public static int countKnown(ResourceKey<Level> dim, int minX, int minZ, int maxX, int maxZ) {
+		Long2ObjectOpenHashMap<ChunkSummary> map = DIMS.get(dim);
+		if (map == null) return 0;
+		int n = 0;
+		for (int cz = minZ >> 4; cz <= maxZ >> 4; cz++) {
+			for (int cx = minX >> 4; cx <= maxX >> 4; cx++) {
+				if (map.containsKey(ChunkPos.pack(cx, cz))) n++;
+			}
+		}
+		return n;
+	}
+
 	/** Chunks recebidos do servidor nesta sessão. */
 	public static long receivedChunks() {
 		return receivedChunks;
