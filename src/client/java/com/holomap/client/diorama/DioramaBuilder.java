@@ -34,7 +34,10 @@ public final class DioramaBuilder {
 	private static final float WATER_SURFACE = 0.875f;
 	/** A textura de água já é semitransparente; a lâmina vai com alfa cheio e o fundo embaixo dela escurece. */
 	private static final int WATER_ALPHA = 0xFF;
-	private static final float UNDERWATER_SHADE = 0.55f;
+	/** Fundo sob a água: escurece um pouco a cada nível de profundidade, até o mínimo. */
+	private static final float UNDERWATER_SHADE_TOP = 0.8f;
+	private static final float UNDERWATER_SHADE_STEP = 0.08f;
+	private static final float UNDERWATER_SHADE_MIN = 0.35f;
 	/** Quantos níveis abaixo do nível do mar a maquete ainda mostra. */
 	public static final int DEPTH_BELOW_SEA = 24;
 
@@ -42,13 +45,13 @@ public final class DioramaBuilder {
 	}
 
 	/** Copia o que é preciso da área do mapa. Roda na thread do cliente (texturas e tintas só existem lá). */
-	public static Snapshot snapshot(ClientTerrain.Reader reader, int centerX, int centerZ, int scale, int lod, int baseY) {
+	public static Snapshot snapshot(ClientTerrain.Reader reader, int centerX, int centerZ, int scale, int lod, int baseY, float verticalScale) {
 		int k = 1 << scale;
 		int n = 128 / lod;
 		int cb = k * lod;
 		int originX = centerX - 64 * k;
 		int originZ = centerZ - 64 * k;
-		Snapshot s = new Snapshot(n, lod);
+		Snapshot s = new Snapshot(n, lod, verticalScale);
 		Map<Long, int[]> tints = s.tints;
 
 		for (int j = 0; j < n; j++) {
@@ -124,14 +127,17 @@ public final class DioramaBuilder {
 	/** Cópia imutável da área; {@link #mesh()} pode rodar em qualquer thread. */
 	public static final class Snapshot {
 		final int n, lod;
+		/** Altura de um nível em pixels do mapa (o lado da célula vezes o exagero vertical). */
+		final float levelHeight;
 		final int[] topL, botL, biome;
 		final Look[][] stack;
 		final Look[] fill;
 		final Map<Long, int[]> tints = new HashMap<>();
 
-		Snapshot(int n, int lod) {
+		Snapshot(int n, int lod, float verticalScale) {
 			this.n = n;
 			this.lod = lod;
+			this.levelHeight = lod * verticalScale;
 			topL = new int[n * n];
 			botL = new int[n * n];
 			biome = new int[n * n];
@@ -197,8 +203,8 @@ public final class DioramaBuilder {
 							Look nb = at(i + dirs[d][0], j + dirs[d][2], level + dirs[d][1]);
 							boolean hidden = nb.occludes || (nb == look && !look.water);
 							if (hidden) continue;
-							// fundo de rio/mar mais escuro, para a água parecer funda
-							float shade = at(i, j, level + 1).water ? UNDERWATER_SHADE : 1f;
+							// fundo de rio/mar mais escuro quanto mais fundo, como no mapa vanilla
+							float shade = underwaterShade(i, j, level);
 							solidQuads += face(solid, look, tint, d, i, level, j, 1f, 0xFF, shade);
 						}
 					}
@@ -207,6 +213,13 @@ public final class DioramaBuilder {
 			MeshData solidMesh = solidQuads > 0 ? solid.build() : null;
 			MeshData waterMesh = waterQuads > 0 ? water.build() : null;
 			return new Built(solidMesh, solidBytes, solidQuads, waterMesh, waterBytes, waterQuads);
+		}
+
+		private float underwaterShade(int i, int j, int level) {
+			int depth = 0;
+			while (depth < 16 && at(i, j, level + 1 + depth).water) depth++;
+			if (depth == 0) return 1f;
+			return Math.max(UNDERWATER_SHADE_MIN, UNDERWATER_SHADE_TOP - UNDERWATER_SHADE_STEP * (depth - 1));
 		}
 
 		/**
@@ -218,7 +231,7 @@ public final class DioramaBuilder {
 			float f = lod;
 			float x0 = i * f, x1 = x0 + f;
 			float z0 = j * f, z1 = z0 + f;
-			float y0 = level * f, y1 = y0 + f * topFrac;
+			float y0 = level * levelHeight, y1 = y0 + levelHeight * topFrac;
 			int quads = 0;
 			for (Layer layer : look.faces[dir]) {
 				int color = layer.tinted() && tint != null && layer.tintIndex() < tint.length ? tint[layer.tintIndex()] : 0xFFFFFFFF;

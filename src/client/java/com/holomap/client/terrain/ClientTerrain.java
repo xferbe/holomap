@@ -38,8 +38,30 @@ public final class ClientTerrain {
 	private static final LongOpenHashSet LOADED = new LongOpenHashSet();
 	private static ClientLevel currentLevel;
 	private static long modCount;
+	private static long receivedChunks;
+	private static long localChanges, serverChanges;
 
 	private ClientTerrain() {
+	}
+
+	public static int knownChunks() {
+		int n = 0;
+		for (Long2ObjectOpenHashMap<ChunkSummary> map : DIMS.values()) n += map.size();
+		return n;
+	}
+
+	/** Chunks que mudaram de conteúdo: lidos aqui / vindos do servidor. */
+	public static long localChanges() {
+		return localChanges;
+	}
+
+	public static long serverChanges() {
+		return serverChanges;
+	}
+
+	/** Chunks recebidos do servidor nesta sessão. */
+	public static long receivedChunks() {
+		return receivedChunks;
 	}
 
 	/** Muda sempre que qualquer chunk muda. */
@@ -70,7 +92,7 @@ public final class ClientTerrain {
 		for (int n = 0; n < SAMPLES_PER_TICK && !QUEUE.isEmpty(); n++) {
 			long key = QUEUE.removeFirstLong();
 			LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(key), ChunkPos.getZ(key));
-			if (chunk != null) put(level.dimension(), key, TerrainSampler.sample(level, chunk));
+			if (chunk != null) if (put(level.dimension(), key, TerrainSampler.sample(level, chunk))) localChanges++;
 		}
 	}
 
@@ -79,18 +101,21 @@ public final class ClientTerrain {
 		if (id == null) return;
 		ResourceKey<Level> dim = ResourceKey.create(Registries.DIMENSION, id);
 		boolean sameLevel = currentLevel != null && currentLevel.dimension().equals(dim);
+		receivedChunks += keys.length;
 		for (int i = 0; i < keys.length; i++) {
 			if (sameLevel && LOADED.contains(keys[i])) continue;
-			put(dim, keys[i], chunks.get(i));
+			if (put(dim, keys[i], chunks.get(i))) serverChanges++;
 		}
 	}
 
-	private static void put(ResourceKey<Level> dim, long key, ChunkSummary summary) {
+	/** Guarda o chunk; devolve true se o conteúdo mudou. */
+	private static boolean put(ResourceKey<Level> dim, long key, ChunkSummary summary) {
 		Long2ObjectOpenHashMap<ChunkSummary> map = DIMS.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>());
-		if (summary.sameContent(map.get(key))) return;
+		if (summary.sameContent(map.get(key))) return false;
 		map.put(key, summary);
 		modCount++;
 		STAMPS.computeIfAbsent(dim, k -> new Long2LongOpenHashMap()).put(key, modCount);
+		return true;
 	}
 
 	/** Algum chunk da área (em blocos) mudou depois de {@code since}? */
@@ -119,6 +144,7 @@ public final class ClientTerrain {
 		LOADED.clear();
 		QUEUE.clear();
 		currentLevel = null;
+		receivedChunks = 0;
 		modCount++;
 	}
 

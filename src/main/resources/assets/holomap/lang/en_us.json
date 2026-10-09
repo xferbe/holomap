@@ -1,3 +1,4 @@
 {
-	"modmenu.descriptionTranslation.holomap": "Maps in item frames become live 3D terrain dioramas with the game textures."
+	"modmenu.descriptionTranslation.holomap": "Maps in item frames become live 3D terrain dioramas with the game textures.",
+	"holomap.protocol_mismatch": "Holomap: the server runs another version of the mod (protocol %s, yours is %s). Dioramas will only show terrain your game has loaded. Use the same Holomap version on both sides."
 }

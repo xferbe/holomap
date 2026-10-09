@@ -7,8 +7,12 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -41,13 +45,41 @@ public final class ServerTerrainStore {
 	private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<ChunkSummary>> dims = new HashMap<>();
 	private final Map<ResourceKey<Level>, LongLinkedOpenHashSet> loadQueue = new HashMap<>();
 	private final Map<ResourceKey<Level>, LongLinkedOpenHashSet> dirty = new HashMap<>();
+	/** Dimensões com mudança desde o último save: o autosave só regrava essas. */
+	private final Set<ResourceKey<Level>> unsaved = new HashSet<>();
 	private long nextVersion = 1;
-	/** Muda sempre que algum chunk muda; os assinantes usam para pular varreduras à toa. */
-	private long modCount;
-	private boolean unsaved;
 
-	public long modCount() {
-		return modCount;
+	/** Chunk que mudou, na ordem em que mudou. Quem manda terreno lê daqui em vez de varrer a área inteira. */
+	public record Change(ResourceKey<Level> dim, long key) {
+	}
+
+	private static final int MAX_LOG = 1 << 16;
+	private final List<Change> log = new ArrayList<>();
+	/** Posição absoluta do primeiro item de {@link #log} (o começo é descartado quando ele cresce demais). */
+	private long logBase;
+
+	/** Posição depois da última mudança registrada. */
+	public long logEnd() {
+		return logBase + log.size();
+	}
+
+	/**
+	 * Passa ao consumidor as mudanças a partir de {@code from}. Devolve false se parte delas já foi descartada:
+	 * quem chamou precisa varrer a área de novo.
+	 */
+	public boolean changesSince(long from, java.util.function.Consumer<Change> consumer) {
+		if (from < logBase) return false;
+		for (int i = (int) (from - logBase); i < log.size(); i++) consumer.accept(log.get(i));
+		return true;
+	}
+
+	public int size(ResourceKey<Level> dim) {
+		Long2ObjectOpenHashMap<ChunkSummary> map = dims.get(dim);
+		return map == null ? 0 : map.size();
+	}
+
+	public Set<ResourceKey<Level>> dimensions() {
+		return dims.keySet();
 	}
 
 	public ChunkSummary get(ResourceKey<Level> dim, long key) {
@@ -108,13 +140,18 @@ public final class ServerTerrainStore {
 		if (fresh.sameContent(map.get(key))) return;
 		fresh.version = nextVersion++;
 		map.put(key, fresh);
-		modCount++;
-		unsaved = true;
+		unsaved.add(level.dimension());
+		log.add(new Change(level.dimension(), key));
+		if (log.size() > MAX_LOG) {
+			int drop = log.size() / 2;
+			log.subList(0, drop).clear();
+			logBase += drop;
+		}
 	}
 
 	// ---- persistência ----
 
-	private static Path fileFor(Path dir, ResourceKey<Level> dim) {
+	public static Path fileFor(Path dir, ResourceKey<Level> dim) {
 		var id = dim.identifier();
 		return dir.resolve(id.getNamespace() + "_" + id.getPath().replace('/', '_') + ".bin.gz");
 	}
@@ -135,18 +172,20 @@ public final class ServerTerrainStore {
 				}
 				dims.put(level.dimension(), map);
 			} catch (IOException e) {
-				Holomap.LOGGER.warn("Não consegui ler o terreno salvo de {}", file, e);
+				Holomap.LOGGER.warn("Could not read saved terrain from {}", file, e);
 			}
 		}
-		modCount++;
 	}
 
 	/** Copia o estado na thread do servidor e grava em segundo plano (os resumos são imutáveis depois de prontos). */
 	public CompletableFuture<Void> save(Path dir, boolean async) {
-		if (!unsaved) return CompletableFuture.completedFuture(null);
-		unsaved = false;
+		if (unsaved.isEmpty()) return CompletableFuture.completedFuture(null);
 		Map<ResourceKey<Level>, Long2ObjectOpenHashMap<ChunkSummary>> snapshot = new HashMap<>();
-		dims.forEach((dim, map) -> snapshot.put(dim, new Long2ObjectOpenHashMap<>(map)));
+		for (ResourceKey<Level> dim : unsaved) {
+			Long2ObjectOpenHashMap<ChunkSummary> map = dims.get(dim);
+			if (map != null) snapshot.put(dim, new Long2ObjectOpenHashMap<>(map));
+		}
+		unsaved.clear();
 		Runnable write = () -> {
 			try {
 				Files.createDirectories(dir);
@@ -164,7 +203,7 @@ public final class ServerTerrainStore {
 					Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 				}
 			} catch (IOException e) {
-				Holomap.LOGGER.warn("Não consegui salvar o terreno do Holomap", e);
+				Holomap.LOGGER.warn("Could not save Holomap terrain", e);
 			}
 		};
 		if (async) return CompletableFuture.runAsync(write);
@@ -176,6 +215,8 @@ public final class ServerTerrainStore {
 		dims.clear();
 		loadQueue.clear();
 		dirty.clear();
-		unsaved = false;
+		unsaved.clear();
+		log.clear();
+		logBase = 0;
 	}
 }

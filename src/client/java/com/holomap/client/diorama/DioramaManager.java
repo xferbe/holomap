@@ -1,27 +1,29 @@
 package com.holomap.client.diorama;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.joml.Matrix4f;
 import org.joml.Vector4f;
 
 import com.holomap.Holomap;
+import com.holomap.HolomapConfig;
 import com.holomap.client.ClientState;
-import com.holomap.client.ClientState.PlayerView;
-import com.holomap.client.MapSprites;
 import com.holomap.client.terrain.ClientTerrain;
-import com.holomap.client.terrain.TerrainColors;
 import com.holomap.net.HolomapNet.MapInfo;
+import com.holomap.terrain.LodPolicy;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.commands.RenderPass;
 import com.mojang.renderpearl.api.pipeline.BlendFunction;
@@ -31,15 +33,15 @@ import com.mojang.renderpearl.api.pipeline.DepthStencilState;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.RenderPipelines;
-import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.state.ItemFrameRenderState;
 import net.minecraft.client.renderer.rendertype.PreparedRenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.texture.TextureAtlas;
-import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 
 /**
  * Dono das maquetes: uma por mapa e nível de detalhe, montada em segundo plano, subida para a GPU uma vez
@@ -47,12 +49,18 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
  * porque cada um desenha a própria área no próprio quadro.
  */
 public final class DioramaManager {
-	/** Quadros perto mostram cada coluna; longe, células de 2, 4 ou 8 colunas (menos faces, mesma aparência à distância). */
-	private static final double[] LOD_DISTANCE = {8, 20, 40};
-	private static final int[] LOD = {1, 2, 4, 8};
-	/** Uma área é conferida no máximo a cada 4 ticks e remontada no máximo 4 vezes por segundo. */
+	/**
+	 * Uma área é conferida no máximo a cada 4 ticks. A maquete detalhada (perto) se refaz até 4 vezes por segundo,
+	 * para quem está construindo ver na hora; as de longe esperam mais (detalhe 2: 10 ticks, 4: 20, 8: 40).
+	 */
 	private static final int CHECK_INTERVAL = 4;
 	private static final int MIN_REBUILD_TICKS = 5;
+	/**
+	 * O mundo muda sozinho o tempo todo (grama vira terra, alga cresce, folha cai), e cada mudança tocaria a maquete
+	 * inteira. Por isso, somando todos os mapas, sai no máximo uma remontagem a cada 5 ticks, a mais perto primeiro.
+	 * Maquete que ainda não existe não espera essa vez.
+	 */
+	private static final int GLOBAL_REBUILD_TICKS = 5;
 	private static final int UNUSED_EVICT_TICKS = 200;
 	private static final int ACTIVE_TICKS = 40;
 
@@ -78,7 +86,7 @@ public final class DioramaManager {
 		MapInfo info;
 		DioramaMesh mesh;
 		long builtStamp = -1;
-		long lastBuildTick = -MIN_REBUILD_TICKS;
+		long lastBuildTick = Long.MIN_VALUE / 2;
 		long lastCheckTick;
 		long lastUsedTick;
 		CompletableFuture<DioramaBuilder.Built> pending;
@@ -93,9 +101,35 @@ public final class DioramaManager {
 	private record Draw(DioramaMesh mesh, Matrix4f pose, float brightness) {
 	}
 
+	/** Números para o {@code /holomapstats} e para o teste de carga. */
+	public record Stats(int meshes, long quads, long gpuBytes, int building, int builds, double lastBuildMs, double avgBuildMs,
+						double avgSnapshotMs, int knownChunks, long receivedChunks, long localChanges, long serverChanges, int serverProtocol) {
+		public String describe() {
+			return String.format(Locale.ROOT,
+				"Holomap: %d dioramas, %,d faces, %.1f MB GPU, %d building%n"
+					+ "builds: %d (worker: last %.1f ms, avg %.1f ms; game thread: avg %.2f ms)%n"
+					+ "terrain: %,d chunks known, %,d received from server, changes %,d local / %,d server (protocol %s)",
+				meshes, quads, gpuBytes / 1048576.0, building, builds, lastBuildMs, avgBuildMs, avgSnapshotMs,
+				knownChunks, receivedChunks, localChanges, serverChanges, serverProtocol == 0 ? "none" : Integer.toString(serverProtocol));
+		}
+	}
+
 	private static final Map<Long, Entry> ENTRIES = new HashMap<>();
 	private static final List<Draw> DRAWS = new ArrayList<>();
+	/** Último nível de detalhe usado em cada mapa (para a folga entre níveis). */
+	private static final Int2IntOpenHashMap LAST_LOD = new Int2IntOpenHashMap();
+	private static final AtomicInteger BUILDS = new AtomicInteger();
+	private static final AtomicLong BUILD_NANOS = new AtomicLong();
+	/** Tempo gasto na thread do jogo copiando áreas (a parte da montagem que pesa no FPS). */
+	private static final AtomicLong SNAPSHOT_NANOS = new AtomicLong();
+	private static volatile long lastBuildNanos;
+	private static double appliedVerticalScale = Double.NaN;
 	private static long ticks;
+	private static long lastRebuildTick = Long.MIN_VALUE / 2;
+
+	static {
+		LAST_LOD.defaultReturnValue(-1);
+	}
 
 	private DioramaManager() {
 	}
@@ -109,25 +143,21 @@ public final class DioramaManager {
 		return Math.max(level.getMinY(), level.getSeaLevel() - DioramaBuilder.DEPTH_BELOW_SEA);
 	}
 
-	private static int lodFor(double distSq) {
-		for (int i = 0; i < LOD_DISTANCE.length; i++) {
-			if (distSq <= LOD_DISTANCE[i] * LOD_DISTANCE[i]) return LOD[i];
-		}
-		return LOD[LOD.length - 1];
+	private static int lodFor(int mapId, double distSq) {
+		int index = LodPolicy.index(Math.sqrt(distSq), HolomapConfig.get().lodDistances, LAST_LOD.get(mapId));
+		LAST_LOD.put(mapId, index);
+		return LodPolicy.LOD[index];
 	}
 
-	/**
-	 * Chamado pelo mixin do {@code ItemFrameRenderer}, com a pose já no espaço do mapa (128×128). Agenda o desenho
-	 * da maquete (no passe sólido) e desenha as setas dos jogadores por cima do relevo.
-	 */
-	public static void submit(ItemFrameRenderState state, PoseStack poseStack, SubmitNodeCollector collector) {
+	/** Chamado pelo mixin do {@code ItemFrameRenderer}, com a pose já no espaço do mapa (128×128). Agenda o desenho da maquete. */
+	public static void submit(ItemFrameRenderState state, PoseStack poseStack) {
 		Minecraft mc = Minecraft.getInstance();
 		if (state.mapId == null || mc.level == null) return;
 		int mapId = state.mapId.id();
 		MapInfo info = ClientState.mapInfo(mapId);
 		if (info == null || !info.dimension().equals(mc.level.dimension().identifier().toString())) return;
 
-		int lod = lodFor(state.distanceToCameraSq);
+		int lod = lodFor(mapId, state.distanceToCameraSq);
 		Entry e = ENTRIES.computeIfAbsent(key(mapId, lod), k -> new Entry(mapId, lod));
 		e.info = info;
 		e.lastUsedTick = ticks;
@@ -135,16 +165,15 @@ public final class DioramaManager {
 		if (mesh == null) mesh = anyLod(mapId, lod);
 		if (mesh != null) {
 			if (DRAWS.size() > 1024) DRAWS.clear();
-			DRAWS.add(new Draw(mesh, new Matrix4f(poseStack.last().pose()), brightness(state.lightCoords)));
+			DRAWS.add(new Draw(mesh, new Matrix4f(poseStack.last().pose()), brightness(mc, state.lightCoords)));
 		}
-		submitPlayers(mc, info, poseStack, collector, state.lightCoords);
 	}
 
 	/** Enquanto o detalhe pedido não fica pronto, mostra o que já existir (evita o mapa "piscar" ao se aproximar). */
 	private static DioramaMesh anyLod(int mapId, int wanted) {
 		DioramaMesh best = null;
 		int bestDiff = Integer.MAX_VALUE;
-		for (int lod : LOD) {
+		for (int lod : LodPolicy.LOD) {
 			Entry other = ENTRIES.get(key(mapId, lod));
 			if (other != null && other.mesh != null && Math.abs(lod - wanted) < bestDiff) {
 				best = other.mesh;
@@ -154,41 +183,22 @@ public final class DioramaManager {
 		return best;
 	}
 
-	/** Luz do quadro → brilho da maquete (a malha é montada com luz cheia). */
-	private static float brightness(int lightCoords) {
+	/**
+	 * Luz do quadro → brilho da maquete (a malha é montada com luz cheia). A luz do céu é multiplicada pelo quanto o
+	 * céu ilumina agora, então à noite a maquete escurece junto com o mundo e só a luz de tocha continua forte.
+	 */
+	private static float brightness(Minecraft mc, int lightCoords) {
 		int block = (lightCoords >> 4) & 0xF;
 		int sky = (lightCoords >> 20) & 0xF;
-		return 0.35f + 0.65f * Math.max(block, sky) / 15f;
-	}
-
-	/** Setas do mapa vanilla em cima do relevo, onde cada jogador está (inclusive quem está longe). */
-	private static void submitPlayers(Minecraft mc, MapInfo info, PoseStack poseStack, SubmitNodeCollector collector, int light) {
-		int k = 1 << info.scale();
-		double originX = info.centerX() - 64.0 * k, originZ = info.centerZ() - 64.0 * k;
-		int baseY = baseY(mc.level);
-		float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
-		TextureAtlasSprite arrow = MapSprites.player();
-		for (PlayerView p : ClientState.players(partial)) {
-			float px = (float) ((p.pos().x - originX) / k), py = (float) ((p.pos().z - originZ) / k);
-			if (px < 0 || py < 0 || px > 128 || py > 128) continue;
-			float h = (float) Math.max(0, (p.pos().y - baseY) / k);
-			float z = -h - 0.6f;
-			int color = p.self() ? 0xFFFFFFFF : TerrainColors.playerColor(p.id());
-			float yaw = p.yaw();
-			collector.submitCustomGeometry(poseStack, RenderTypes.text(arrow.atlasLocation()), (pose, buf) -> arrow(pose, buf, arrow, px, py, z, yaw, color));
+		float skyFactor = 1f;
+		try {
+			float partial = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+			skyFactor = mc.gameRenderer.mainCamera().attributeProbe().getValue(EnvironmentAttributes.SKY_LIGHT_FACTOR, partial);
+		} catch (RuntimeException ignored) {
+			// câmera ainda sem mundo: luz cheia
 		}
-	}
-
-	private static void arrow(PoseStack.Pose pose, VertexConsumer buf, TextureAtlasSprite s, float x, float y, float z, float yaw, int color) {
-		double r = Math.toRadians(yaw);
-		float cos = (float) Math.cos(r), sin = (float) Math.sin(r);
-		float h = 3f;
-		float[][] c = {{-h, h}, {h, h}, {h, -h}, {-h, -h}};
-		float[][] uv = {{s.getU0(), s.getV0()}, {s.getU1(), s.getV0()}, {s.getU1(), s.getV1()}, {s.getU0(), s.getV1()}};
-		for (int i = 0; i < 4; i++) {
-			float rx = c[i][0] * cos - c[i][1] * sin, ry = c[i][0] * sin + c[i][1] * cos;
-			buf.addVertex(pose, x + rx, y + ry, z).setColor(color).setUv(uv[i][0], uv[i][1]).setLight(0xF000F0);
-		}
+		float light = Math.max(block / 15f, sky / 15f * skyFactor);
+		return 0.3f + 0.7f * light;
 	}
 
 	/** Chamado no fim do passe sólido do jogo (mixin em {@code LevelRenderer.executeSolid}). */
@@ -230,9 +240,13 @@ public final class DioramaManager {
 			clear();
 			return;
 		}
-		ClientTerrain.Reader reader = null;
-		boolean scheduled = false;
+		double verticalScale = HolomapConfig.get().verticalScale;
+		if (verticalScale != appliedVerticalScale) {
+			appliedVerticalScale = verticalScale;
+			invalidate();
+		}
 		int baseY = baseY(mc.level);
+		Entry next = null;
 		int minX = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
 
 		Iterator<Entry> it = ENTRIES.values().iterator();
@@ -243,12 +257,11 @@ public final class DioramaManager {
 				try {
 					DioramaBuilder.Built built = e.pending.join();
 					DioramaMesh old = e.mesh;
-					Holomap.LOGGER.debug("Maquete do mapa {} (detalhe {}): {} faces sólidas, {} de água", e.mapId, e.lod, built.solidQuads(), built.waterQuads());
 					e.mesh = DioramaMesh.upload(built, "Holomap map " + e.mapId);
 					if (old != null) old.close();
 					e.builtStamp = e.pendingStamp;
 				} catch (RuntimeException ex) {
-					Holomap.LOGGER.warn("Falha montando a maquete do mapa {}", e.mapId, ex);
+					Holomap.LOGGER.warn("Failed to build the diorama of map {}", e.mapId, ex);
 				}
 				e.pending = null;
 			}
@@ -269,25 +282,89 @@ public final class DioramaManager {
 			maxX = Math.max(maxX, bx);
 			maxZ = Math.max(maxZ, bz);
 
-			if (scheduled || e.pending != null || ticks - e.lastBuildTick < MIN_REBUILD_TICKS) continue;
-			if (e.builtStamp >= 0) {
-				if (ticks - e.lastCheckTick < CHECK_INTERVAL) continue;
+			if (e.pending != null || ticks - e.lastBuildTick < (long) MIN_REBUILD_TICKS * e.lod) continue;
+			boolean first = e.builtStamp < 0;
+			if (!first) {
+				if (ticks - lastRebuildTick < GLOBAL_REBUILD_TICKS || ticks - e.lastCheckTick < CHECK_INTERVAL) continue;
 				e.lastCheckTick = ticks;
 				if (!ClientTerrain.changedSince(mc.level.dimension(), ax, az, bx, bz, e.builtStamp)) continue;
 			}
-			// uma cópia por tick, no máximo; a parte pesada vai para a outra thread
-			if (reader == null) reader = ClientTerrain.reader(mc.level.dimension());
-			DioramaBuilder.Snapshot snap = DioramaBuilder.snapshot(reader, e.info.centerX(), e.info.centerZ(), e.info.scale(), e.lod, baseY);
-			e.pendingStamp = ClientTerrain.modCount();
-			e.pending = CompletableFuture.supplyAsync(snap::mesh, WORKER);
-			e.lastBuildTick = ticks;
-			e.lastCheckTick = ticks;
-			scheduled = true;
+			// a primeira montagem passa na frente; entre as outras, a mais detalhada (mais perto da câmera)
+			if (next == null || first && next.builtStamp >= 0 || first == next.builtStamp < 0 && e.lod < next.lod) next = e;
 		}
+		if (next != null) schedule(mc, next, baseY, (float) verticalScale);
+		enforceGpuBudget();
 		if (minX != Integer.MAX_VALUE) ClientState.requestRegion(minX, minZ, maxX, maxZ);
 	}
 
-	/** Texturas mudaram (resource pack): remonta tudo. */
+	/** Copia a área na thread do jogo (uma por tick, no máximo) e manda a parte pesada para a outra thread. */
+	private static void schedule(Minecraft mc, Entry e, int baseY, float verticalScale) {
+		if (e.builtStamp >= 0) lastRebuildTick = ticks;
+		ClientTerrain.Reader reader = ClientTerrain.reader(mc.level.dimension());
+		long snapStart = System.nanoTime();
+		DioramaBuilder.Snapshot snap = DioramaBuilder.snapshot(reader, e.info.centerX(), e.info.centerZ(), e.info.scale(), e.lod, baseY,
+			verticalScale);
+		SNAPSHOT_NANOS.addAndGet(System.nanoTime() - snapStart);
+		e.pendingStamp = ClientTerrain.modCount();
+		e.pending = CompletableFuture.supplyAsync(() -> timed(snap), WORKER);
+		e.lastBuildTick = ticks;
+		e.lastCheckTick = ticks;
+	}
+
+	private static DioramaBuilder.Built timed(DioramaBuilder.Snapshot snap) {
+		long start = System.nanoTime();
+		DioramaBuilder.Built built = snap.mesh();
+		long took = System.nanoTime() - start;
+		lastBuildNanos = took;
+		BUILD_NANOS.addAndGet(took);
+		BUILDS.incrementAndGet();
+		return built;
+	}
+
+	/**
+	 * Acima do teto de memória de vídeo, solta as maquetes menos usadas recentemente (níveis de detalhe que ficaram
+	 * para trás, quadros fora da tela). As que estão sendo desenhadas agora ficam.
+	 */
+	private static void enforceGpuBudget() {
+		long limit = HolomapConfig.get().gpuMemoryMb * 1048576L;
+		long total = 0;
+		for (Entry e : ENTRIES.values()) if (e.mesh != null) total += e.mesh.bytes;
+		if (total <= limit) return;
+		List<Map.Entry<Long, Entry>> byAge = new ArrayList<>();
+		for (Map.Entry<Long, Entry> me : ENTRIES.entrySet()) {
+			Entry e = me.getValue();
+			if (e.mesh != null && e.pending == null && e.lastUsedTick < ticks - 1) byAge.add(me);
+		}
+		byAge.sort(Comparator.comparingLong(me -> me.getValue().lastUsedTick));
+		for (Map.Entry<Long, Entry> me : byAge) {
+			if (total <= limit) break;
+			// sai inteira: se o quadro voltar a ser visto, ela é montada de novo
+			total -= me.getValue().mesh.bytes;
+			me.getValue().mesh.close();
+			ENTRIES.remove(me.getKey());
+		}
+	}
+
+	public static Stats stats() {
+		int meshes = 0, building = 0;
+		long quads = 0, bytes = 0;
+		for (Entry e : ENTRIES.values()) {
+			if (e.mesh != null) {
+				meshes++;
+				quads += e.mesh.quads();
+				bytes += e.mesh.bytes;
+			}
+			if (e.pending != null) building++;
+		}
+		int builds = BUILDS.get();
+		double avg = builds == 0 ? 0 : BUILD_NANOS.get() / 1e6 / builds;
+		double snap = builds == 0 ? 0 : SNAPSHOT_NANOS.get() / 1e6 / builds;
+		return new Stats(meshes, quads, bytes, building, builds, lastBuildNanos / 1e6, avg, snap,
+			ClientTerrain.knownChunks(), ClientTerrain.receivedChunks(), ClientTerrain.localChanges(), ClientTerrain.serverChanges(),
+			ClientState.serverProtocol());
+	}
+
+	/** Texturas ou escala vertical mudaram: remonta tudo. */
 	public static void invalidate() {
 		for (Entry e : ENTRIES.values()) e.builtStamp = -1;
 	}
@@ -299,5 +376,6 @@ public final class DioramaManager {
 		}
 		ENTRIES.clear();
 		DRAWS.clear();
+		LAST_LOD.clear();
 	}
 }

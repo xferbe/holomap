@@ -19,6 +19,7 @@ public class Holomap implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		HolomapConfig.load();
 		HolomapNet.register();
 		HolomapServer.init();
 	}

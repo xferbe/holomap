@@ -2,7 +2,6 @@ package com.holomap.net;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 import com.holomap.Holomap;
 import com.holomap.terrain.ChunkSummary;
@@ -16,6 +15,8 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 public final class HolomapNet {
 	public static final int MAX_REGIONS = 4;
 	public static final int MAX_CHUNKS_PER_BATCH = 8;
+	/** Sobe sempre que algum pacote muda de formato. */
+	public static final int PROTOCOL = 2;
 
 	private HolomapNet() {
 	}
@@ -81,38 +82,17 @@ public final class HolomapNet {
 		}
 	}
 
-	public record PlayerMarker(UUID id, String name, double x, double y, double z, float yaw) {
-	}
-
-	/** Servidor → cliente: posição dos outros jogadores da mesma dimensão. */
-	public record Players(String dimension, List<PlayerMarker> players) implements CustomPacketPayload {
-		public static final Type<Players> TYPE = payloadType("players");
-		public static final StreamCodec<RegistryFriendlyByteBuf, Players> CODEC = StreamCodec.of(
-			(buf, p) -> {
-				buf.writeUtf(p.dimension);
-				buf.writeVarInt(p.players.size());
-				for (PlayerMarker m : p.players) {
-					buf.writeUUID(m.id());
-					buf.writeUtf(m.name());
-					buf.writeDouble(m.x());
-					buf.writeDouble(m.y());
-					buf.writeDouble(m.z());
-					buf.writeFloat(m.yaw());
-				}
-			},
-			buf -> {
-				String dim = buf.readUtf();
-				int n = buf.readVarInt();
-				if (n > 1024) throw new IllegalArgumentException("Too many players: " + n);
-				List<PlayerMarker> list = new ArrayList<>(n);
-				for (int i = 0; i < n; i++) {
-					list.add(new PlayerMarker(buf.readUUID(), buf.readUtf(), buf.readDouble(), buf.readDouble(), buf.readDouble(), buf.readFloat()));
-				}
-				return new Players(dim, list);
-			});
+	/**
+	 * Servidor → cliente, ao entrar: versão do protocolo do mod no servidor. Com versões diferentes o cliente não
+	 * conversa com o servidor e a maquete usa só o terreno carregado localmente.
+	 */
+	public record Hello(int protocol) implements CustomPacketPayload {
+		public static final Type<Hello> TYPE = payloadType("hello");
+		public static final StreamCodec<RegistryFriendlyByteBuf, Hello> CODEC = StreamCodec.of(
+			(buf, p) -> buf.writeVarInt(p.protocol), buf -> new Hello(buf.readVarInt()));
 
 		@Override
-		public Type<Players> type() {
+		public Type<Hello> type() {
 			return TYPE;
 		}
 	}
@@ -153,7 +133,7 @@ public final class HolomapNet {
 		c2s.register(ViewRequest.TYPE, ViewRequest.CODEC);
 		c2s.register(MapInfoRequest.TYPE, MapInfoRequest.CODEC);
 		s2c.register(TerrainBatch.TYPE, TerrainBatch.CODEC);
-		s2c.register(Players.TYPE, Players.CODEC);
+		s2c.register(Hello.TYPE, Hello.CODEC);
 		s2c.register(MapInfo.TYPE, MapInfo.CODEC);
 	}
 }

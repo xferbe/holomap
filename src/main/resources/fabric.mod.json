@@ -3,9 +3,15 @@
 	"id": "holomap",
 	"version": "${version}",
 	"name": "Holomap",
-	"description": "Mapas em item frame viram maquetes 3D do terreno, com as texturas do jogo e atualizadas em tempo real. Mapas lado a lado formam um mapa 3D grande.",
-	"authors": ["Guilherme"],
+	"description": "Maps in item frames become live 3D terrain dioramas, with the game's own textures. Maps placed side by side join into one big 3D map.",
+	"authors": ["xferbe"],
+	"contact": {
+		"homepage": "https://modrinth.com/mod/holomap",
+		"sources": "https://github.com/xferbe/holomap",
+		"issues": "https://github.com/xferbe/holomap/issues"
+	},
 	"license": "MIT",
+	"icon": "assets/holomap/icon.png",
 	"environment": "*",
 	"entrypoints": {
 		"main": ["com.holomap.Holomap"],
