@@ -19,6 +19,7 @@ import org.joml.Vector4f;
 import com.holomap.Holomap;
 import com.holomap.HolomapConfig;
 import com.holomap.client.ClientState;
+import com.holomap.client.look.BlockLooks;
 import com.holomap.client.terrain.ClientTerrain;
 import com.holomap.net.HolomapNet.MapInfo;
 import com.holomap.terrain.LodPolicy;
@@ -42,6 +43,10 @@ import net.minecraft.client.renderer.rendertype.PreparedRenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.world.attribute.EnvironmentAttributes;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Dono das maquetes: uma por mapa e nível de detalhe, montada em segundo plano, subida para a GPU uma vez
@@ -139,6 +144,14 @@ public final class DioramaManager {
 
 	private static long key(int mapId, int lod) {
 		return ((long) mapId << 8) | lod;
+	}
+
+	/** A rocha que preenche a maquete abaixo do solo: pedra, netherrack ou pedra do End. */
+	private static BlockLooks.Look deepFill(ClientLevel level) {
+		BlockState rock = level.dimension() == Level.NETHER ? Blocks.NETHERRACK.defaultBlockState()
+			: level.dimension() == Level.END ? Blocks.END_STONE.defaultBlockState()
+			: Blocks.STONE.defaultBlockState();
+		return BlockLooks.of(Block.getId(rock));
 	}
 
 	/** Y que fica rente à textura do mapa: um pouco abaixo do nível do mar, para lagos e vales terem fundo. */
@@ -306,7 +319,7 @@ public final class DioramaManager {
 		ClientTerrain.Reader reader = ClientTerrain.reader(mc.level.dimension());
 		long snapStart = System.nanoTime();
 		DioramaBuilder.Snapshot snap = DioramaBuilder.snapshot(reader, e.info.centerX(), e.info.centerZ(), e.info.scale(), e.lod, baseY,
-			verticalScale);
+			verticalScale, deepFill(mc.level));
 		SNAPSHOT_NANOS.addAndGet(System.nanoTime() - snapStart);
 		e.pendingStamp = ClientTerrain.modCount();
 		e.pending = CompletableFuture.supplyAsync(() -> timed(snap), WORKER);

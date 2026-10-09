@@ -15,6 +15,10 @@ import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Monta a maquete 3D de um mapa em duas etapas:
@@ -40,12 +44,15 @@ public final class DioramaBuilder {
 	private static final float UNDERWATER_SHADE_MIN = 0.35f;
 	/** Quantos níveis abaixo do nível do mar a maquete ainda mostra. */
 	public static final int DEPTH_BELOW_SEA = 24;
+	/** Camadas de solo (terra, areia...) abaixo do chão antes da pedra, como na geração do mundo. */
+	private static final int SOIL_DEPTH = 3;
 
 	private DioramaBuilder() {
 	}
 
 	/** Copia o que é preciso da área do mapa. Roda na thread do cliente (texturas e tintas só existem lá). */
-	public static Snapshot snapshot(ClientTerrain.Reader reader, int centerX, int centerZ, int scale, int lod, int baseY, float verticalScale) {
+	public static Snapshot snapshot(ClientTerrain.Reader reader, int centerX, int centerZ, int scale, int lod, int baseY, float verticalScale,
+									Look deepFill) {
 		int k = 1 << scale;
 		int n = 128 / lod;
 		int cb = k * lod;
@@ -65,11 +72,15 @@ public final class DioramaBuilder {
 				int idx = ChunkSummary.index(wx & 15, wz & 15);
 				int top = chunk.top[idx];
 				if (top == ChunkSummary.UNKNOWN) continue;
-				int bottomY = chunk.bottom(idx);
+				// a pilha guardada termina no chão firme mais um bloco embaixo dele; esse último é só a amostra do que
+				// tem abaixo do chão (terra, areia, pedra, ou ar quando o chão é um piso ou uma saliência)
+				int stored = chunk.stackSize(idx);
+				int groundY = stored >= 2 ? chunk.bottom(idx) + 1 : chunk.bottom(idx);
+				BlockState under = stored >= 2 ? Block.stateById(chunk.stateAt(idx, groundY - 1)) : null;
 				int biome = chunk.biome[idx];
 
 				int topL = Math.floorDiv(top - baseY, cb);
-				int botL = Math.max(0, Math.floorDiv(bottomY - baseY, cb));
+				int botL = Math.max(0, Math.floorDiv(groundY - baseY, cb));
 				if (topL < 0) {
 					topL = 0;
 					botL = 0;
@@ -79,7 +90,7 @@ public final class DioramaBuilder {
 				for (int level = topL; level >= botL; level--) {
 					// o bloco que aparece na célula é o mais alto dela que tem forma
 					int yHigh = Math.min(top, baseY + level * cb + cb - 1);
-					int yLow = Math.max(baseY + level * cb, yHigh - 15);
+					int yLow = Math.max(Math.max(baseY + level * cb, yHigh - 15), Math.min(groundY, yHigh));
 					Look found = BlockLooks.AIR;
 					for (int y = yHigh; y >= yLow; y--) {
 						Look l = BlockLooks.of(chunk.stateAt(idx, y));
@@ -88,22 +99,44 @@ public final class DioramaBuilder {
 							break;
 						}
 					}
-					if (top < baseY && level == 0) found = firstRenderable(chunk, idx, top, bottomY);
+					if (top < baseY && level == 0) found = firstRenderable(chunk, idx, top, groundY);
 					stack[topL - level] = found;
 					addTints(tints, found, biome);
 				}
-				Look fill = firstRenderable(chunk, idx, bottomY, bottomY - 4);
-				if (fill == BlockLooks.AIR) fill = stack[stack.length - 1];
-				addTints(tints, fill, biome);
+				// abaixo do chão: algumas camadas do solo de verdade e depois a pedra da dimensão, nunca oco
+				Look soil = deepFill, deep = deepFill;
+				if (under != null && isSoil(under)) {
+					soil = BlockLooks.of(Block.getId(under));
+				} else if (under != null && isBedrockLike(under)) {
+					soil = deep = BlockLooks.of(Block.getId(under));
+				}
+				if (!soil.renderable) soil = deepFill;
+				if (!deep.renderable) deep = deepFill;
+				addTints(tints, soil, biome);
+				addTints(tints, deep, biome);
 
 				s.topL[c] = topL;
 				s.botL[c] = botL;
 				s.stack[c] = stack;
-				s.fill[c] = fill;
+				s.fill[c] = soil;
+				s.deep[c] = deep;
+				s.soilL[c] = Math.floorDiv(groundY - SOIL_DEPTH - baseY, cb);
 				s.biome[c] = biome;
 			}
 		}
 		return s;
+	}
+
+	/** Solo que cobre a pedra por algumas camadas: terra, areia, cascalho, argila, lama, neve. */
+	private static boolean isSoil(BlockState state) {
+		return state.is(BlockTags.DIRT) || state.is(BlockTags.SAND) || state.is(BlockTags.MUD) || state.is(BlockTags.SNOW)
+			|| state.is(Blocks.GRAVEL) || state.is(Blocks.CLAY) || state.is(Blocks.SOUL_SAND) || state.is(Blocks.SOUL_SOIL);
+	}
+
+	/** Rocha natural: continua ela mesma até a base (montanha de pedra, terracota das badlands, netherrack). */
+	private static boolean isBedrockLike(BlockState state) {
+		return state.is(BlockTags.BASE_STONE_OVERWORLD) || state.is(BlockTags.BASE_STONE_NETHER) || state.is(BlockTags.TERRACOTTA)
+			|| state.is(Blocks.SANDSTONE) || state.is(Blocks.RED_SANDSTONE) || state.is(Blocks.END_STONE);
 	}
 
 	private static Look firstRenderable(ChunkSummary chunk, int idx, int fromY, int toY) {
@@ -131,7 +164,9 @@ public final class DioramaBuilder {
 		final float levelHeight;
 		final int[] topL, botL, biome;
 		final Look[][] stack;
-		final Look[] fill;
+		/** Abaixo da pilha: solo até o nível {@link #soilL} (inclusive) e, abaixo dele, a pedra. */
+		final Look[] fill, deep;
+		final int[] soilL;
 		final Map<Long, int[]> tints = new HashMap<>();
 
 		Snapshot(int n, int lod, float verticalScale) {
@@ -143,6 +178,8 @@ public final class DioramaBuilder {
 			biome = new int[n * n];
 			stack = new Look[n * n][];
 			fill = new Look[n * n];
+			deep = new Look[n * n];
+			soilL = new int[n * n];
 		}
 
 		private Look at(int i, int j, int level) {
@@ -150,7 +187,7 @@ public final class DioramaBuilder {
 			int c = j * n + i;
 			int top = topL[c];
 			if (top < 0 || level > top) return BlockLooks.AIR;
-			if (level < botL[c]) return fill[c];
+			if (level < botL[c]) return level >= soilL[c] ? fill[c] : deep[c];
 			return stack[c][top - level];
 		}
 
