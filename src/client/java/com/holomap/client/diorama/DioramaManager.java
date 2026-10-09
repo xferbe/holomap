@@ -64,18 +64,21 @@ public final class DioramaManager {
 	private static final int UNUSED_EVICT_TICKS = 200;
 	private static final int ACTIVE_TICKS = 40;
 
+	/** O pipeline de texto do jogo, com o vertex shader próprio (neblina pela distância real até a câmera). */
 	private static final RenderPipeline SOLID = RenderPipelines.register(RenderPipeline.builder(RenderPipelines.WORLD_TEXT_SNIPPET)
 		.withLocation(Holomap.id("pipeline/diorama_solid"))
+		.withVertexShader(Holomap.id("core/diorama"))
 		.withColorTargetState(ColorTargetState.DEFAULT)
 		.build());
 	private static final RenderPipeline WATER = RenderPipelines.register(RenderPipeline.builder(RenderPipelines.WORLD_TEXT_SNIPPET)
 		.withLocation(Holomap.id("pipeline/diorama_water"))
+		.withVertexShader(Holomap.id("core/diorama"))
 		.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT))
 		.withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, false))
 		.build());
 
 	private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
-		Thread t = new Thread(r, "Holomap diorama");
+		Thread t = new Thread(r, "HoloMap diorama");
 		t.setDaemon(true);
 		t.setPriority(Thread.MIN_PRIORITY);
 		return t;
@@ -106,7 +109,7 @@ public final class DioramaManager {
 						double avgSnapshotMs, int knownChunks, long receivedChunks, long localChanges, long serverChanges, int serverProtocol) {
 		public String describe() {
 			return String.format(Locale.ROOT,
-				"Holomap: %d dioramas, %,d faces, %.1f MB GPU, %d building%n"
+				"HoloMap: %d dioramas, %,d faces, %.1f MB GPU, %d building%n"
 					+ "builds: %d (worker: last %.1f ms, avg %.1f ms; game thread: avg %.2f ms)%n"
 					+ "terrain: %,d chunks known, %,d received from server, changes %,d local / %,d server (protocol %s)",
 				meshes, quads, gpuBytes / 1048576.0, building, builds, lastBuildMs, avgBuildMs, avgSnapshotMs,
@@ -257,7 +260,7 @@ public final class DioramaManager {
 				try {
 					DioramaBuilder.Built built = e.pending.join();
 					DioramaMesh old = e.mesh;
-					e.mesh = DioramaMesh.upload(built, "Holomap map " + e.mapId);
+					e.mesh = DioramaMesh.upload(built, "HoloMap map " + e.mapId);
 					if (old != null) old.close();
 					e.builtStamp = e.pendingStamp;
 				} catch (RuntimeException ex) {
