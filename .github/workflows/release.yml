@@ -1,0 +1,33 @@
+name: Release
+
+# Push a tag like v0.2.0: builds the jar, attaches it to a GitHub release and, when the
+# MODRINTH_TOKEN secret is set, publishes the same jar to Modrinth.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and run unit tests
+        run: ./gradlew build releaseChangelog
+      - name: GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/libs/holomap-*.jar
+          body_path: build/changelog.md
+      - name: Modrinth
+        if: ${{ env.MODRINTH_TOKEN != '' }}
+        run: ./gradlew modrinth modrinthSyncBody --no-configuration-cache

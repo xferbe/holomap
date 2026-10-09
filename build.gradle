@@ -1,5 +1,6 @@
 plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'com.modrinth.minotaur' version "${minotaur_version}"
 }
 
 base {
@@ -32,6 +33,15 @@ dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+// Testes de unidade (formato do terreno, pacotes, config); não abrem o jogo
+test {
+	useJUnitPlatform()
 }
 
 processResources {
@@ -43,6 +53,12 @@ processResources {
 	}
 }
 
+jar {
+	from("LICENSE") {
+		rename { "LICENSE_holomap" }
+	}
+}
+
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
 	it.options.encoding = 'UTF-8'
@@ -51,4 +67,56 @@ tasks.withType(JavaCompile).configureEach {
 java {
 	sourceCompatibility = JavaVersion.VERSION_25
 	targetCompatibility = JavaVersion.VERSION_25
+}
+
+// Notas da versão atual (a seção "## <versão>" do CHANGELOG.md), usadas na release do GitHub e no Modrinth
+def changelogFile = file("CHANGELOG.md")
+def releaseNotesFile = layout.buildDirectory.file("changelog.md")
+def currentVersion = project.version.toString()
+
+static String releaseNotes(File changelog, String version) {
+	if (!changelog.exists()) return null
+	def section = changelog.text.split(/(?m)^## /).find { it.startsWith(version + "\n") || it.startsWith(version + "\r\n") }
+	return section == null ? null : section.substring(section.indexOf("\n") + 1).trim() + "\n"
+}
+
+def currentNotes = releaseNotes(changelogFile, currentVersion)
+
+tasks.register("releaseChangelog") {
+	inputs.file(changelogFile)
+	outputs.file(releaseNotesFile)
+	doLast {
+		if (currentNotes == null) throw new GradleException("CHANGELOG.md has no section for ${currentVersion}")
+		releaseNotesFile.get().asFile.text = currentNotes
+	}
+}
+
+// Publicação no Modrinth: ./gradlew modrinth modrinthSyncBody --no-configuration-cache, com MODRINTH_TOKEN no ambiente.
+// O texto da página vem do README, com os links trocados por endereços absolutos do GitHub.
+static String modrinthBody(File readme) {
+	def raw = "https://raw.githubusercontent.com/xferbe/holomap/main/"
+	def blob = "https://github.com/xferbe/holomap/blob/main/"
+	return readme.text
+		.replaceAll(/(?s)<!--.*?-->\s*/, "")
+		.replaceAll(/(?m)^\[!\[.*\n/, "")
+		.replaceAll(/(?s)## Download\n.*?(?=## )/, "")
+		.replace("](docs/images/", "](" + raw + "docs/images/")
+		.replace("](LICENSE)", "](" + blob + "LICENSE)")
+		.replaceAll(/\n{3,}/, "\n\n")
+}
+
+modrinth {
+	token = System.getenv("MODRINTH_TOKEN")
+	projectId = "holomap"
+	versionNumber = currentVersion
+	versionName = "Holomap ${currentVersion}"
+	versionType = currentVersion.startsWith("0.") ? "beta" : "release"
+	uploadFile = jar
+	gameVersions = [project.minecraft_version]
+	loaders = ["fabric"]
+	changelog = currentNotes ?: ""
+	syncBodyFrom = modrinthBody(file("README.md"))
+	dependencies {
+		required.project "fabric-api"
+	}
 }
