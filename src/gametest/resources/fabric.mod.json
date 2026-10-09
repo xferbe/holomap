@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"id": "holomap-test",
 	"version": "1.0.0",
-	"name": "Holomap Test",
+	"name": "HoloMap Test",
 	"environment": "*",
 	"entrypoints": {
 		"fabric-client-gametest": ["com.holomap.test.HolomapClientTest"]

@@ -34,7 +34,7 @@ public final class ClientState {
 	private ClientState() {
 	}
 
-	/** O servidor tem o Holomap, na mesma versão de protocolo. Sem isso, a maquete usa só o terreno carregado aqui. */
+	/** O servidor tem o HoloMap, na mesma versão de protocolo. Sem isso, a maquete usa só o terreno carregado aqui. */
 	public static boolean serverHasMod() {
 		return serverProtocol == HolomapNet.PROTOCOL && Minecraft.getInstance().getConnection() != null
 			&& ClientPlayNetworking.canSend(ViewRequest.TYPE);

@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"id": "holomap",
 	"version": "${version}",
-	"name": "Holomap",
+	"name": "HoloMap",
 	"description": "Maps in item frames become live 3D terrain dioramas, with the game's own textures. Maps placed side by side join into one big 3D map.",
 	"authors": ["xferbe"],
 	"contact": {

@@ -1,4 +1,4 @@
 {
 	"modmenu.descriptionTranslation.holomap": "Mapas em item frame viram maquetes 3D do terreno, com as texturas do jogo e atualizadas em tempo real.",
-	"holomap.protocol_mismatch": "Holomap: o servidor usa outra versão do mod (protocolo %s, o seu é %s). As maquetes só vão mostrar o terreno que o seu jogo tem carregado. Use a mesma versão do Holomap nos dois lados."
+	"holomap.protocol_mismatch": "HoloMap: o servidor usa outra versão do mod (protocolo %s, o seu é %s). As maquetes só vão mostrar o terreno que o seu jogo tem carregado. Use a mesma versão do Holomap nos dois lados."
 }

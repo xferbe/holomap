@@ -109,7 +109,7 @@ modrinth {
 	token = System.getenv("MODRINTH_TOKEN")
 	projectId = "holomap"
 	versionNumber = currentVersion
-	versionName = "Holomap ${currentVersion}"
+	versionName = "HoloMap ${currentVersion}"
 	versionType = currentVersion.startsWith("0.") ? "beta" : "release"
 	uploadFile = jar
 	gameVersions = [project.minecraft_version]
