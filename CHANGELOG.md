@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- Below the ground, dioramas now show a few layers of the real soil (dirt, sand, gravel) and then stone, netherrack
+  or end stone, like the world itself. Before, the last block was repeated down to the base, so hills looked like
+  tall blocks of dirt.
+- Fixed holes in dioramas where the ground has air right below it: a house floor on a slope, sand over a cave. You
+  could see through them to the flat map underneath.
+
 ## 0.2.0
 
 - Fixed fog on dioramas: the edges of every map faded into the sky color, and maps placed side by side showed a pale
