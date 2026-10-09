@@ -1,0 +1,27 @@
+{
+	"schemaVersion": 1,
+	"id": "holomap",
+	"version": "${version}",
+	"name": "Holomap",
+	"description": "Mapas em item frame viram maquetes 3D do terreno, com as texturas do jogo e atualizadas em tempo real. Mapas lado a lado formam um mapa 3D grande.",
+	"authors": ["Guilherme"],
+	"license": "MIT",
+	"environment": "*",
+	"entrypoints": {
+		"main": ["com.holomap.Holomap"],
+		"client": ["com.holomap.client.HolomapClient"]
+	},
+	"mixins": [
+		"holomap.mixins.json",
+		{
+			"config": "holomap.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}
